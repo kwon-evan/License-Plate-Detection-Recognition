@@ -1,0 +1,6 @@
+[submodule "yolov7"]
+	path = yolov7
+	url = https://github.com/kwon-evan/yolov7
+[submodule "STLPRNet"]
+	path = STLPRNet
+	url = https://github.com/kwon-evan/STLPRNet
