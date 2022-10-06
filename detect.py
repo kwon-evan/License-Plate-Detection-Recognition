@@ -13,9 +13,10 @@ import numpy as np
 sys.path.append('./yolov7')
 from yolov7.models.experimental import attempt_load
 from yolov7.utils.datasets import LoadStreams, LoadImages
-from yolov7.utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, apply_classifier, \
+from yolov7.utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, \
+    apply_classifier, \
     scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
-from yolov7.utils.plots import plot_one_box
+from yolov7.utils.plots import plot_one_box, plot_one_box_PIL
 from yolov7.utils.torch_utils import select_device, load_classifier, time_synchronized, TracedModel
 
 sys.path.append('./STLPRNet')
@@ -44,7 +45,9 @@ def detect(save_img=False):
     model = attempt_load(weights, map_location=device)  # load FP32 model
     stride = int(model.stride.max())  # model stride
     imgsz = check_img_size(imgsz, s=stride)  # check img_size
-
+    STLPRN = STLPRNet(
+        **vars(opt)
+    ).load_from_checkpoint(opt.STLPRNweights)
 
     if trace:
         model = TracedModel(model, device, opt.img_size)
@@ -86,7 +89,8 @@ def detect(save_img=False):
             img = img.unsqueeze(0)
 
         # Warmup
-        if device.type != 'cpu' and (old_img_b != img.shape[0] or old_img_h != img.shape[2] or old_img_w != img.shape[3]):
+        if device.type != 'cpu' and (
+                old_img_b != img.shape[0] or old_img_h != img.shape[2] or old_img_w != img.shape[3]):
             old_img_b = img.shape[0]
             old_img_h = img.shape[2]
             old_img_w = img.shape[3]
@@ -135,8 +139,15 @@ def detect(save_img=False):
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
                     if save_img or view_img:  # Add bbox to image
-                        label = f'{names[int(cls)]} {conf:.2f}'
-                        plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=1)
+                        x1, y1, x2, y2 = list(map(int, torch.tensor(xyxy).view(1, 4).view(-1).tolist()))
+
+                        im0 = plot_one_box_PIL(xyxy, im0,
+                                               label=STLPRN.detect(
+                                                   cv2.resize(im0[y1:y2, x1:x2], (94, 24),
+                                                              interpolation=cv2.INTER_CUBIC)
+                                               ),
+                                               color=colors[int(cls)],
+                                               line_thickness=1)
 
             # Print time (inference + NMS)
             print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
@@ -168,7 +179,7 @@ def detect(save_img=False):
 
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        #print(f"Results saved to {save_dir}{s}")
+        # print(f"Results saved to {save_dir}{s}")
 
     print(f'Done. ({time.time() - t0:.3f}s)')
 
@@ -193,12 +204,12 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
-
-    parser.add_argument('--STLPRN-weights', nargs='+', type=str, default='STLPRNet/saving_ckpt/last.pt', help='model.pt path(s)')
+    parser.add_argument('--STLPRNweights', nargs='+', type=str, default='STLPRNet/saving_ckpt1/best.ckpt',
+                        help='model.pt path(s)')
 
     opt = parser.parse_args()
     print(opt)
-    #check_requirements(exclude=('pycocotools', 'thop'))
+    # check_requirements(exclude=('pycocotools', 'thop'))
 
     with torch.no_grad():
         if opt.update:  # update all models (to fix SourceChangeWarning)
