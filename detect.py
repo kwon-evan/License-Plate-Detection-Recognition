@@ -81,7 +81,7 @@ def detect(save_img=False):
     old_img_b = 1
 
     t0 = time.time()
-    for path, img, im0s, vid_cap in dataset:
+    for f, (path, img, im0s, vid_cap) in enumerate(dataset):
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -105,6 +105,7 @@ def detect(save_img=False):
         # Apply NMS
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
         t3 = time_synchronized()
+        pps_list = []
 
         # Apply Classifier
         if classify:
@@ -130,6 +131,7 @@ def detect(save_img=False):
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
 
+                pps_list = []
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
                     if save_txt:  # Write to file
@@ -140,22 +142,31 @@ def detect(save_img=False):
 
                     if save_img or view_img:  # Add bbox to image
                         x1, y1, x2, y2 = list(map(int, torch.tensor(xyxy).view(1, 4).view(-1).tolist()))
+                        if conf >= opt.conf_thres + 0.1:
+                            t4 = time_synchronized()
+                            label = STLPRN.detect(cv2.resize(im0[y1:y2, x1:x2], (94, 24), interpolation=cv2.INTER_CUBIC))
+                            t5 = time_synchronized()
+                        else:
+                            label = "Unknown"
+                        im0 = plot_one_box_PIL(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=1)
+                        pps_list.append(t5 - t4)
 
-                        im0 = plot_one_box_PIL(xyxy, im0,
-                                               label=STLPRN.detect(
-                                                   cv2.resize(im0[y1:y2, x1:x2], (94, 24),
-                                                              interpolation=cv2.INTER_CUBIC)
-                                               ),
-                                               color=colors[int(cls)],
-                                               line_thickness=1)
+            if not pps_list:
+                pps_list.append(0.)
 
             # Print time (inference + NMS)
-            print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
+            print(f'{s}Done.\n'
+                  f' ({(1E3 * (t2 - t1)):.1f}ms) Inference,'
+                  f' ({(1E3 * (t3 - t2)):.1f}ms) NMS,'
+                  f' ({(1E3 * sum(pps_list) / len(pps_list)):.1f}ms) plate/ms, ', end='')
 
             # Stream results
             if view_img:
+                print(f"FPS: {1 / (time_synchronized() - t1):.2f}")
+                cv2.putText(im0, f"FPS: {1 / (time_synchronized() - t1):.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 cv2.imshow(str(p), im0)
                 cv2.waitKey(1)  # 1 millisecond
+
 
             # Save results (image with detections)
             if save_img:
