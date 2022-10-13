@@ -16,7 +16,7 @@ from yolov7.utils.datasets import LoadStreams, LoadImages
 from yolov7.utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, \
     apply_classifier, \
     scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
-from yolov7.utils.plots import plot_one_box, plot_one_box_PIL
+from yolov7.utils.plots import plot_one_box, plot_one_box_PIL, plot_boxes_PIL
 from yolov7.utils.torch_utils import select_device, load_classifier, time_synchronized, TracedModel
 
 sys.path.append('./STLPRNet')
@@ -125,7 +125,6 @@ def detect(save_img=False):
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
-
                 # Print results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
@@ -133,23 +132,12 @@ def detect(save_img=False):
 
                 pps_list = []
                 # Write results
-                for *xyxy, conf, cls in reversed(det):
-                    if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
-                        with open(txt_path + '.txt', 'a') as f:
-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
-
-                    if save_img or view_img:  # Add bbox to image
-                        x1, y1, x2, y2 = list(map(int, torch.tensor(xyxy).view(1, 4).view(-1).tolist()))
-                        if conf >= opt.conf_thres + 0.1:
-                            t4 = time_synchronized()
-                            label = STLPRN.detect(cv2.resize(im0[y1:y2, x1:x2], (94, 24), interpolation=cv2.INTER_CUBIC))
-                            t5 = time_synchronized()
-                        else:
-                            label = "Unknown"
-                        im0 = plot_one_box_PIL(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=1)
-                        pps_list.append(t5 - t4)
+                if save_img or view_img:  # Add bbox to image
+                    xyxys = [list(map(int, torch.tensor(xyxy).view(1, 4).view(-1).tolist()))
+                             for *xyxy, conf, cls in reversed(det)]
+                    imgs = [im0[y1:y2, x1:x2] for x1, y1, x2, y2 in xyxys]
+                    pl_preds = STLPRN.detect(imgs)
+                    im0 = plot_boxes_PIL(xyxys, im0, labels=pl_preds, color=colors[-1], line_thickness=1)
 
             if not pps_list:
                 pps_list.append(0.)
