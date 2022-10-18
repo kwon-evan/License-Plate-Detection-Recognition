@@ -3,7 +3,7 @@ import os.path
 import sys
 import threading
 import time
-from collections import deque
+from collections import deque, Counter
 from multiprocessing.context import Process
 from pathlib import Path
 from threading import Thread, Lock
@@ -19,6 +19,8 @@ from numpy import random
 import numpy as np
 import enlighten
 import warnings
+
+from sort.sort import Sort
 
 warnings.filterwarnings("ignore")
 
@@ -49,7 +51,6 @@ class VideoReader(Thread):
         self.frameHeight = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 영상의 높이(세로) 프레임
         self.frame_size = (self.frameWidth, self.frameHeight)
         self.frame_counts = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        print('frame_size={}, frames={}'.format(self.frame_size, self.frame_counts))
 
     def run(self):
         is_full = False
@@ -58,7 +59,7 @@ class VideoReader(Thread):
             if not is_full:
                 if self.cap.grab():
                     ret, frame = self.cap.retrieve()
-                    buffer.append(frame)
+                    origin.append(frame)
                 else:
                     if self.cap.isOpened():
                         self.cap.release()
@@ -67,9 +68,9 @@ class VideoReader(Thread):
             time.sleep(0.01)
 
     def check_buffer(self):
-        if len(buffer) > 100:
+        if len(origin) > 100:
             return True
-        elif len(buffer) < 50:
+        elif len(origin) < 50:
             return False
 
 
@@ -83,7 +84,6 @@ class LicensePlateDetector(Thread):
                  iou_thres=0.45,
                  agnostic_nms=False):
         Thread.__init__(self)
-        self.buffer = buffer
         self.agnostic_nms = agnostic_nms
         self.classes = 0
         self.iou_thres = iou_thres
@@ -99,6 +99,8 @@ class LicensePlateDetector(Thread):
         if self.half:
             self.yolo.half()  # to FP16
 
+        self.tracker = Sort(max_age=30, min_hits=3)
+
     def run(self):
         # Run inference
         if self.device.type != 'cpu':
@@ -108,8 +110,8 @@ class LicensePlateDetector(Thread):
         old_img_b = 1
 
         while True:
-            if buffer:
-                self.detect(buffer.popleft())
+            if origin:
+                self.detect(origin.popleft())
             else:
                 if not vr.cap.isOpened():
                     print("Process Detector is Dead.")
@@ -132,22 +134,31 @@ class LicensePlateDetector(Thread):
             img = img.unsqueeze(0)
 
         # Inference
+        t0 = time.time()
         pred = self.yolo(img, augment=self.augment)[0]
 
         # Apply NMS
         pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=self.classes,
                                    agnostic=self.agnostic_nms)
+        t1 = time.time()
+        model_statuses[0].update(time=f'{(t1 - t0) * 1000:2.2f}')
 
         xyxys = []
-        lp_preds = []
+        tracks = np.empty((0, 5))
         # Process detections
+        t2 = time.time()
         for i, det in enumerate(pred):  # detections per image
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
-                xyxys = [list(map(int, torch.tensor(xyxy).view(1, 4).view(-1).tolist()))
-                         for *xyxy, conf, cls in reversed(det)]
-        LPs.append((im0, xyxys))
+                # xyxys = [list(map(int, torch.tensor(xyxy).view(1, 4).view(-1).tolist()))
+                #          for *xyxy, conf, cls in reversed(det)]
+                xyxys_conf = np.array([list(map(int, torch.tensor(xyxy).view(1, 4).view(-1).tolist())) + [conf.tolist()]
+                                       for *xyxy, conf, cls in reversed(det)])
+                tracks = self.tracker.update(xyxys_conf).astype(int)
+        t3 = time.time()
+        model_statuses[1].update(time=f'{(t3 - t2) * 1000:2.2f}')
+        LPs.append((im0, tracks[:, :4], tracks[:, 4]))
 
 
 class LicensePlateReader(Thread):
@@ -165,24 +176,38 @@ class LicensePlateReader(Thread):
             if LPs:
                 self.detect(*LPs.popleft())
             else:
-                if not buffer and not vr.cap.isOpened():
+                if not origin and LPs:
                     print("Process Reader is Dead.")
                     return
 
             time.sleep(0.001)
 
-    def detect(self, img, xyxys):
-        imgs = [img[y1:y2, x1:x2] for x1, y1, x2, y2 in xyxys]
+    def detect(self, img, xyxys, ids):
+        plates = [img[y1:y2, x1:x2].astype(np.uint8) for x1, y1, x2, y2 in xyxys]
+
+        t0 = time.time()
+        preds = self.lprn.detect_imgs(plates, self.device, self.half)
+        t1 = time.time()
+        if plates:
+            model_statuses[2].update(time=f'{(t1 - t0) * 1000 / len(plates):2.2f}')
+
+        for id, pred in zip(ids, preds):
+            while len(id_list) - 1 < id:
+                id_list.append(Counter())
+            if self.lprn.check(pred):
+                id_list[id].update([pred])
+
+        preds_by_id = [id_list[id].most_common()[0][0] if id_list[id] else "Unknown" for id in ids]
         im0 = plot_boxes_PIL(xyxys,
                              img,
-                             labels=self.lprn.detect_imgs(imgs, self.device, self.half) if xyxys else [],
+                             labels=preds_by_id,
                              color=self.colors,
                              line_thickness=1)
-        outputs.append(im0)
+        buffer.append(im0)
 
 
 def update_bars(bars):
-    for bar, dq in zip(bars, [buffer, LPs, outputs]):
+    for bar, dq in zip(bars, [origin, LPs, buffer]):
         if len(dq) / 100 > 0.8:
             _color = 'green'
         elif len(dq) / 100 > 0.2:
@@ -205,66 +230,96 @@ class VideoViewer(Thread):
 
     def run(self):
         start = False
-        while player_bar.count < vr.frame_counts:
-            if len(outputs) > 50:
+        while play_bar.count < vr.frame_counts:
+            if len(buffer) > 100:
                 start = True
                 status_bar.update(stage='Playing')
 
             t0 = time_synchronized()
-            if outputs and start:
-                img = outputs.popleft()
+            if buffer and start:
+                img = buffer.popleft()
                 cv2.imshow('result', img)
                 cv2.waitKey(1)
-                player_bar.update()
+                play_bar.update()
             time.sleep(1 / self.fps * 0.75)
             t1 = time_synchronized()
 
             update_bars(bars)
-            status_bar.update(fps=f'{1 / (t1 - t0):.2f}')
+            status_bar.update(fps=f'{1 / (t1 - t0):2.2f}')
 
         status_bar.update(stage='Done.')
         print("Process VideoViewer Ended")
-        cv2.destroyAllWindows()
         return
 
 
 if __name__ == '__main__':
-    buffer = deque()
+    VIDEO_PATH = 'test/videoplayback2.mp4'
+    origin = deque()
     LPs = deque()
-    outputs = deque()
+    buffer = deque()
+    id_list = deque(Counter())
 
     # display bars
     manager = enlighten.get_manager()
-    status_format = '{program}{fill}Stage: {stage}{fill} FPS: {fps}'
+    status_format = '{program}{fill} Stage: {stage}{fill} FPS: {fps}'
+    file_format = '[ file ]   {file}, {width}x{height}, {length} frames{fill}'
     status_bar = manager.status_bar(color='bold_bright_black_on_white',
                                     status_format=status_format,
                                     program='License Plate Detection',
                                     stage='Loading',
                                     fps=f'{0.0:.2f}',
-                                    position=7)
-    bar_format = '{desc}{desc_pad}{percentage:3.0f}%|{bar}| {count:{len_total}d}{unit_pad}{unit}s'
-    bars = [manager.counter(total=200, desc='  buffer', unit='frame', bar_format=bar_format, position=5),
-            manager.counter(total=200, desc='  lp    ', unit='lp   ', bar_format=bar_format, position=4),
-            manager.counter(total=200, desc='  output', unit='frame', bar_format=bar_format, position=3)]
+                                    position=10)
+    vid_info_bar = manager.status_bar(status_format=file_format,
+                                      file=os.path.split(VIDEO_PATH)[-1],
+                                      width='0',
+                                      height='0',
+                                      length='0',
+                                      position=9)
+    bar_format = '{desc}{desc_pad} {percentage:3.0f}%|{bar}| {count:{len_total}d}{unit_pad}{unit}s'
+    bars = [
+        manager.counter(total=200, desc='[origin]', unit='frame', bar_format=bar_format, position=8),
+        manager.counter(total=200, desc='[plates]', unit='plate', bar_format=bar_format, position=5),
+        manager.counter(total=200, desc='[buffer]', unit='frame', bar_format=bar_format, position=3)
+    ]
+    model_format = '[{name}]   {time}ms/{unit}{fill}'
+    model_statuses = [
+        manager.status_bar(status_format=model_format, name='yolov7', time='0.0', unit='frame', position=7),
+        manager.status_bar(status_format=model_format, name=' SORT ', time='0.0', unit='frame', position=6),
+        manager.status_bar(status_format=model_format, name='STLPRN', time='0.0', unit='plate', position=4),
+        manager.status_bar(status_format='   ↓', position=2)
+    ]
 
     # Threads
-    vr = VideoReader(path='test/videoplayback (2).mp4')
+    vr = VideoReader(path=VIDEO_PATH)
     lpd = LicensePlateDetector(
         device='0',
-        yolo_weights='yolov7/runs/train/yolov7-custom7/weights/best.pt',
+        yolo_weights='yolov7/runs/train/yolov7-lp/weights/best.pt',
         img_size=640
     )
     lpr = LicensePlateReader(
-        lprn_weights='STLPRNet/saving_ckpt1/best.ckpt',
+        lprn_weights='STLPRNet/saving_ckpt/best.ckpt',
     )
 
     pb_format = '{desc}{desc_pad}{percentage:3.0f}%|{bar}| {count:{len_total}d}/{total:d} [{elapsed}<{eta}]'
-    player_bar = manager.counter(total=vr.frame_counts, desc='Total', unit='frame', bar_format=pb_format,
-                                 color='bold_bright_black_on_white', position=1)
+    play_bar = manager.counter(total=vr.frame_counts, desc='[  ▶   ]', unit='frame', bar_format=pb_format,
+                               color='white_on_black', position=1)
+    vid_info_bar.update(width=vr.frameWidth,
+                        height=vr.frameHeight,
+                        length=vr.frame_counts)
+
+    vr.daemon = True
+    lpd.daemon = True
+    lpr.daemon = True
+
     vr.start()
     lpd.start()
     lpr.start()
 
     status_bar.update(stage='Initializing')
     vv = VideoViewer(fps=30, manager=manager)
+    vv.daemon = True
     vv.start()
+
+    while vv.is_alive():
+        time.sleep(5)
+    cv2.destroyAllWindows()
