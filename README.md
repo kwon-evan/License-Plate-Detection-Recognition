@@ -3,7 +3,7 @@ inspired by [sirius-ai/LPRNet_Pytorch](https://github.com/sirius-ai/LPRNet_Pytor
 
 ## Getting Start
 ``` shell
-git clone --recurse-submodules https://github.com/kwon-evan/LPDR
+git clone --recurse-submodules https://github.com/kwon-evan/License-Plate-Detection-Recognition
 python main.py
 ```
 
