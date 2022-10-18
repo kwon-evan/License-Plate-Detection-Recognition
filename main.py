@@ -1,42 +1,27 @@
 import argparse
 import os.path
 import sys
-import threading
 import time
 from collections import deque, Counter
-from multiprocessing.context import Process
-from pathlib import Path
-from threading import Thread, Lock
-
+from threading import Thread
 import cv2
 import torch
-import torch.backends.cudnn as cudnn
-from PIL import ImageDraw, ImageFont
-from PIL.Image import Image
-from enlighten import manager
-from pytorch_lightning import Trainer
+import torch.backends.cudnn
 from numpy import random
 import numpy as np
 import enlighten
 import warnings
-
+from STLPRNet.model.STLPRNet import STLPRNet
 from sort.sort import Sort
-
-warnings.filterwarnings("ignore")
+from draw.draw import plot_boxes_PIL
 
 sys.path.append('./yolov7')
-from yolov7.models.experimental import attempt_load
-from yolov7.utils.datasets import LoadStreams, LoadImages, letterbox
-from yolov7.utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, \
-    apply_classifier, scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
-from yolov7.utils.plots import plot_one_box, plot_one_box_PIL, plot_boxes_PIL
-from yolov7.utils.torch_utils import select_device, load_classifier, time_synchronized, TracedModel
+from models.experimental import attempt_load
+from utils.datasets import letterbox
+from utils.general import check_img_size, non_max_suppression, scale_coords
+from utils.torch_utils import select_device
 
-sys.path.append('./STLPRNet')
-from STLPRNet.data.STLPRNDataModule import STLPRNDataModule
-from STLPRNet.model.LPRNET import LPRNet, CHARS
-from STLPRNet.model.STN import STNet
-from STLPRNet.model.STLPRNet import STLPRNet, decode
+warnings.filterwarnings("ignore")
 
 
 class VideoReader(Thread):
@@ -235,14 +220,14 @@ class VideoViewer(Thread):
                 start = True
                 status_bar.update(stage='Playing')
 
-            t0 = time_synchronized()
+            t0 = time.time()
             if buffer and start:
                 img = buffer.popleft()
                 cv2.imshow('result', img)
                 cv2.waitKey(1)
                 play_bar.update()
             time.sleep(1 / self.fps * 0.75)
-            t1 = time_synchronized()
+            t1 = time.time()
 
             update_bars(bars)
             status_bar.update(fps=f'{1 / (t1 - t0):2.2f}')
@@ -293,11 +278,11 @@ if __name__ == '__main__':
     vr = VideoReader(path=VIDEO_PATH)
     lpd = LicensePlateDetector(
         device='0',
-        yolo_weights='yolov7/runs/train/yolov7-lp/weights/best.pt',
+        yolo_weights='weights/yolov7-best.pt',
         img_size=640
     )
     lpr = LicensePlateReader(
-        lprn_weights='STLPRNet/saving_ckpt/best.ckpt',
+        lprn_weights='weights/stlprn-best.pt',
     )
 
     pb_format = '{desc}{desc_pad}{percentage:3.0f}%|{bar}| {count:{len_total}d}/{total:d} [{elapsed}<{eta}]'
