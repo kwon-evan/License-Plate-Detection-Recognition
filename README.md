@@ -17,6 +17,3 @@ python main.py
 * Pillow
 * numpy
 * .. and requirements of submodules
-
-## Postscript
-If this project was useful, please give me a star, thanks!
