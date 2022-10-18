@@ -67,9 +67,9 @@ class VideoReader(Thread):
             time.sleep(0.01)
 
     def check_buffer(self):
-        if len(buffer) > self.frame_counts * 0.02:
+        if len(buffer) > 100:
             return True
-        elif len(buffer) < self.frame_counts * 0.005:
+        elif len(buffer) < 50:
             return False
 
 
@@ -92,8 +92,7 @@ class LicensePlateDetector(Thread):
         self.device = select_device(device)
         self.half = self.device.type != 'cpu'
         # Load model
-        self.yolo = attempt_load(yolo_weights, map_location=self.device)  # load FP32 model
-        # self.lprn = STLPRNet().load_from_checkpoint(lprn_weights)
+        self.yolo = attempt_load(yolo_weights, map_location=self.device).eval()  # load FP32 model
         self.stride = int(self.yolo.stride.max())  # model stride
         self.img_size = check_img_size(img_size, s=self.stride)
 
@@ -152,10 +151,14 @@ class LicensePlateDetector(Thread):
 
 
 class LicensePlateReader(Thread):
-    def __init__(self, lprn_weights):
+    def __init__(self, lprn_weights, device='0'):
         Thread.__init__(self)
-        self.lprn = STLPRNet().load_from_checkpoint(lprn_weights)
         self.colors = [random.randint(0, 255) for _ in range(3)]
+        self.device = select_device(device)
+        self.lprn = STLPRNet().load_from_checkpoint(lprn_weights).to(self.device).eval()
+        self.half = self.device.type != 'cpu'
+        if self.half:
+            self.lprn.half()
 
     def run(self):
         while True:
@@ -172,7 +175,7 @@ class LicensePlateReader(Thread):
         imgs = [img[y1:y2, x1:x2] for x1, y1, x2, y2 in xyxys]
         im0 = plot_boxes_PIL(xyxys,
                              img,
-                             labels=self.lprn.detect(imgs) if xyxys else [],
+                             labels=self.lprn.detect_imgs(imgs, self.device, self.half) if xyxys else [],
                              color=self.colors,
                              line_thickness=1)
         outputs.append(im0)
@@ -180,11 +183,11 @@ class LicensePlateReader(Thread):
 
 def update_bars(bars):
     for bar, dq in zip(bars, [buffer, LPs, outputs]):
-        if len(dq) / 500 > 0.8:
+        if len(dq) / 100 > 0.8:
             _color = 'green'
-        elif len(dq) / 500 > 0.2:
+        elif len(dq) / 100 > 0.2:
             _color = 'white'
-        elif len(dq) / 500 > 0.1:
+        elif len(dq) / 100 > 0.1:
             _color = 'yellow'
         else:
             _color = 'red'
@@ -203,7 +206,7 @@ class VideoViewer(Thread):
     def run(self):
         start = False
         while player_bar.count < vr.frame_counts:
-            if len(outputs) > vr.frame_counts * 0.05:
+            if len(outputs) > 50:
                 start = True
                 status_bar.update(stage='Playing')
 
@@ -216,7 +219,7 @@ class VideoViewer(Thread):
             time.sleep(1 / self.fps * 0.75)
             t1 = time_synchronized()
 
-            update_bars([buffer_bar, lp_bar, output_bar])
+            update_bars(bars)
             status_bar.update(fps=f'{1 / (t1 - t0):.2f}')
 
         status_bar.update(stage='Done.')
@@ -230,6 +233,7 @@ if __name__ == '__main__':
     LPs = deque()
     outputs = deque()
 
+    # display bars
     manager = enlighten.get_manager()
     status_format = '{program}{fill}Stage: {stage}{fill} FPS: {fps}'
     status_bar = manager.status_bar(color='bold_bright_black_on_white',
@@ -239,10 +243,11 @@ if __name__ == '__main__':
                                     fps=f'{0.0:.2f}',
                                     position=7)
     bar_format = '{desc}{desc_pad}{percentage:3.0f}%|{bar}| {count:{len_total}d}{unit_pad}{unit}s'
-    buffer_bar = manager.counter(total=500, desc='  buffer', unit='frame', bar_format=bar_format, position=5)
-    lp_bar = manager.counter(total=500, desc='  lp    ', unit='lp   ', bar_format=bar_format, position=4)
-    output_bar = manager.counter(total=500, desc='  output', unit='frame', bar_format=bar_format, position=3)
+    bars = [manager.counter(total=200, desc='  buffer', unit='frame', bar_format=bar_format, position=5),
+            manager.counter(total=200, desc='  lp    ', unit='lp   ', bar_format=bar_format, position=4),
+            manager.counter(total=200, desc='  output', unit='frame', bar_format=bar_format, position=3)]
 
+    # Threads
     vr = VideoReader(path='test/videoplayback (2).mp4')
     lpd = LicensePlateDetector(
         device='0',
