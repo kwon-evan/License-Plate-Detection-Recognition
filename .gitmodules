@@ -6,4 +6,4 @@
 	url = https://github.com/abewley/sort
 [submodule "yolov7"]
 	path = yolov7
-	url = https://github.com/WongKinYiu/yolov7.git
+	url = https://github.com/WongKinYiu/yolov7/tree/main
