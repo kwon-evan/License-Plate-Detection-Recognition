@@ -64,7 +64,7 @@ class LicensePlateDetector(Thread):
                  yolo_weights,
                  img_size,
                  augment=False,
-                 conf_thres=0.7,
+                 conf_thres=0.5,
                  iou_thres=0.45,
                  agnostic_nms=False):
         Thread.__init__(self)
@@ -237,7 +237,7 @@ class VideoViewer(Thread):
 
 
 if __name__ == '__main__':
-    VIDEO_PATH = 'test/videoplayback2.mp4'
+    VIDEO_PATH = 'test/video3.mp4'
     origin = deque()
     LPs = deque()
     buffer = deque()
