@@ -237,11 +237,11 @@ class VideoViewer(Thread):
 
 
 if __name__ == '__main__':
-    VIDEO_PATH = 'test/video3.mp4'
+    VIDEO_PATH = 'test/video2.mp4'
     origin = deque()
     LPs = deque()
     buffer = deque()
-    id_list = deque(Counter())
+    id_list = deque()
 
     # display bars
     manager = enlighten.get_manager()
@@ -275,21 +275,13 @@ if __name__ == '__main__':
 
     # Threads
     vr = VideoReader(path=VIDEO_PATH)
-    lpd = LicensePlateDetector(
-        device='0',
-        yolo_weights='weights/yolov7-best.pt',
-        img_size=640
-    )
-    lpr = LicensePlateReader(
-        lprn_weights='weights/stlprn-best.pt',
-    )
+    lpd = LicensePlateDetector(device='0', yolo_weights='weights/yolov7-best.pt', img_size=640)
+    lpr = LicensePlateReader(lprn_weights='weights/stlprn-best.pt')
 
     pb_format = '{desc}{desc_pad}{percentage:3.0f}%|{bar}| {count:{len_total}d}/{total:d} [{elapsed}<{eta}]'
     play_bar = manager.counter(total=vr.frame_counts, desc='[  ▶   ]', unit='frame', bar_format=pb_format,
                                color='white_on_black', position=1)
-    vid_info_bar.update(width=vr.frameWidth,
-                        height=vr.frameHeight,
-                        length=vr.frame_counts)
+    vid_info_bar.update(width=vr.frameWidth, height=vr.frameHeight,length=vr.frame_counts)
 
     vr.daemon = True
     lpd.daemon = True
