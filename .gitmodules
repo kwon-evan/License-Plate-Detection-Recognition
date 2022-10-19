@@ -5,3 +5,6 @@
 	path = yolov7
 	url = https://github.com/WongKinYiu/yolov7
 	branch = main
+[submodule "STLPRNet"]
+	path = STLPRNet
+	url = https://github.com/kwon-evan/STLPRNet
