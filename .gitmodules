@@ -4,6 +4,3 @@
 [submodule "sort"]
 	path = sort
 	url = https://github.com/abewley/sort
-[submodule "yolov7"]
-	path = yolov7
-	url = https://github.com/WongKinYiu/yolov7
