@@ -8,3 +8,4 @@
 [submodule "STLPRNet"]
 	path = STLPRNet
 	url = https://github.com/kwon-evan/STLPRNet
+	branch = master
