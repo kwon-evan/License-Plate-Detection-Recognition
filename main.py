@@ -64,7 +64,7 @@ class LicensePlateDetector(Thread):
                  yolo_weights,
                  img_size,
                  augment=False,
-                 conf_thres=0.4,
+                 conf_thres=0.25,
                  iou_thres=0.45,
                  agnostic_nms=False):
         Thread.__init__(self)
@@ -144,14 +144,14 @@ class LicensePlateDetector(Thread):
 
 
 class LicensePlateReader(Thread):
-    def __init__(self, lprn_weights, device='0'):
+    def __init__(self, stlprn_weights, device='0'):
         Thread.__init__(self)
-        self.colors = np.random.randint(255, size=(255, 3))
+        self.colors = np.random.randint(127, size=(255, 3))
         self.device = select_device(device)
-        self.lprn = STLPRNet().load_from_checkpoint(lprn_weights).to(self.device).eval()
+        self.stlprn = STLPRNet().load_from_checkpoint(stlprn_weights).to(self.device).eval()
         self.half = self.device.type != 'cpu'
         if self.half:
-            self.lprn.half()
+            self.stlprn.half()
 
     def run(self):
         while True:
@@ -168,7 +168,7 @@ class LicensePlateReader(Thread):
         plate_imgs = [img[y1:y2, x1:x2].astype(np.uint8) for x1, y1, x2, y2 in xyxys]
 
         t0 = time.time()
-        preds = self.lprn.detect_imgs(plate_imgs, self.device, self.half)
+        preds = self.stlprn.detect_imgs(plate_imgs, self.device, self.half)
         t1 = time.time()
 
         if plate_imgs:
@@ -178,7 +178,7 @@ class LicensePlateReader(Thread):
             while len(id_list) - 1 < id:
                 id_list.append(Counter())
 
-            if self.lprn.check(pred):
+            if self.stlprn.check(pred):
                 id_list[id].update([pred])
 
         preds_by_id = [id_list[id].most_common()[0][0] if id_list[id] else "Unknown" for id in ids]
@@ -264,7 +264,7 @@ def init_bars(manager):
 
 
 if __name__ == '__main__':
-    VIDEO_PATH = 'test/20221019_154425.mp4'
+    VIDEO_PATH = 'test/video1.mp4'
 
     # Queues
     origin, plates, buffer, id_list = deque(), deque(), deque(), deque()
@@ -272,7 +272,7 @@ if __name__ == '__main__':
     # Threads
     vr = VideoReader(path=VIDEO_PATH)
     lpd = LicensePlateDetector(device='0', yolo_weights='weights/yolov7-best.pt', img_size=480)
-    lpr = LicensePlateReader(lprn_weights='weights/stlprn-best.pt')
+    lpr = LicensePlateReader(stlprn_weights='weights/stlprn-best.pt')
     vv = VideoViewer(fps=30)
     vr.daemon, lpd.daemon, lpr.daemon, vv.daemon = True, True, True, True
 
