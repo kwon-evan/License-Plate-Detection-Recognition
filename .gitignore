@@ -1,0 +1,7 @@
+*.jpg
+*.mp4
+*.avi
+.DS_Store*
+__pycache__/
+/test/
+/.idea/

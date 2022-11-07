@@ -1,11 +1,10 @@
 [submodule "sort"]
 	path = sort
 	url = https://github.com/abewley/sort
-[submodule "yolov7"]
-	path = yolov7
-	url = https://github.com/WongKinYiu/yolov7
-	branch = main
 [submodule "STLPRNet"]
 	path = STLPRNet
 	url = https://github.com/kwon-evan/STLPRNet
 	branch = master
+[submodule "darknet"]
+	path = darknet
+	url = https://github.com/pjreddie/darknet.git

@@ -1,1 +1,0 @@
-font is from [here](https://fonts.google.com/noto/specimen/Noto+Sans+KR)

@@ -1,249 +1,267 @@
-import os.path
+'''
+@Author: kwon-evan
+'''
+
+import warnings
 import time
 from collections import deque, Counter
 from threading import Thread
-import cv2
-from numpy import random
+import torch
+from cv2 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 import enlighten
-import warnings
+
 from STLPRNet.model.STLPRNet import STLPRNet
 from sort.sort import Sort
-from draw.draw import plot_boxes_PIL
 from yolo import Yolo
 
 warnings.filterwarnings("ignore")
 
-
 class VideoReader(Thread):
-    def __init__(self,
-                 path):
+    def __init__(self, path: str):
         Thread.__init__(self)
-        if os.path.exists(path):
-            self.cap = cv2.VideoCapture(path)
-        else:
-            assert "Video file not exist."
-        self.is_full = False
 
-        self.frameWidth = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))  # 영상의 넓이(가로) 프레임
-        self.frameHeight = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 영상의 높이(세로) 프레임
-        self.frame_size = (self.frameWidth, self.frameHeight)
-        self.frame_counts = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.cap = cv2.VideoCapture(path)
+
+        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.frame_size = (self.frame_width, self.frame_height)
+        self.frame_total = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     def run(self):
         while True:
-            self.check_buffer()
-
-            if not self.is_full:
+            if not self.is_full(0.7, 200):
                 if self.cap.grab():
-                    ret, frame = self.cap.retrieve()
+                    _, frame = self.cap.retrieve()
                     origin.append(frame)
                 else:
                     if self.cap.isOpened():
                         self.cap.release()
-                    print("Process VideoReader is dead.")
+                    print("Process VideoReader is Done.")
                     return
             time.sleep(0.01)
 
-    def check_buffer(self):
-        max_size = 200
-
-        if len(origin) > 200 * 0.8:
-            self.is_full = True
-        elif len(origin) < 200 * 0.2:
-            self.is_full = False
+    def is_full(self, thres, max_len):
+        return True if len(origin) > max_len * thres else False
 
 
-class LicensePlateDetector(Thread):
-    def __init__(self, root_path, batch_size=1, gpus=0):
+class PlateDetetor(Thread, Yolo):
+    def __init__(self, root: str, batch_size:int =1, gpus:int =0):
+        # Thread
         Thread.__init__(self)
-
-        cfg_path = root_path + 'model.cfg'
-        weight_path = root_path + 'model.weights'
-        meta_path = root_path + 'model.data'
-
-        self.yolo = Yolo(configPath=cfg_path,
-                         weightPath=weight_path,
-                         metaPath=meta_path,
-                         batch_size=batch_size,
-                         gpus=gpus)
+        # Yolo
+        Yolo.__init__(
+                self,
+                configPath=root + 'model.cfg',
+                weightPath=root + 'model.weights',
+                metaPath=root + 'model.data',
+               batch_size=batch_size,
+                gpus=gpus
+        )
+        # SORT
         self.tracker = Sort(max_age=30, min_hits=3)
 
     def run(self):
         while True:
             if origin:
-                self.detect(origin.popleft())
+                # Get Image from origin
+                img = origin.popleft()
+
+                # Yolo Inference
+                t0 = time.time()
+                pred = self.detect(img)
+                pred = np.asarray(pred)
+                t1 = time.time()
+                bars['YOLO'].update(time=f'{(t1 - t0) * 1000:5.3f}')
+
+                # SORT Algorithm
+                t2 = time.time()
+                if pred.any():
+                    tracks = self.tracker.update(pred).astype(int)
+                else:
+                    tracks = np.empty((0, 5))
+                t3 = time.time()
+                bars['SORT'].update(time=f'{(t3 - t2) * 1000:5.3f}')
+
+                # img, bbox, id
+                plates.append((img, tracks[:, :4], tracks[:, 4]))
+
             else:
                 if not vr.cap.isOpened():
-                    print("Process Detector is Dead.")
+                    print("Plate Detector is Done.")
                     return
             time.sleep(0.01)
 
-    def detect(self, im0):
-        img = im0
-
-        # Inference
-        t0 = time.time()
-        pred = self.yolo.detect(img)
-        pred = np.asarray(pred)
-        t1 = time.time()
-        bars['yolo'].update(time=f'{(t1 - t0) * 1000:2.2f}')
-
-        # Process detections
-        t2 = time.time()
-        if pred.any():
-            tracks = self.tracker.update(pred).astype(int)
-        else:
-            tracks = np.empty((0, 5))
-        t3 = time.time()
-
-        bars['sort'].update(time=f'{(t3 - t2) * 1000:2.2f}')
-        plates.append((im0, tracks[:, :4], tracks[:, 4]))
-
-
-class LicensePlateReader(Thread):
-    def __init__(self, stlprn_weights, cuda=True):
+class PlateReader(Thread, STLPRNet):
+    def __init__(self):
+        # THREAD
         Thread.__init__(self)
-        self.colors = np.random.randint(127, size=(255, 3))
-        self.device = 'cuda' if cuda else 'cpu'
-        self.stlprn = STLPRNet().load_from_checkpoint(stlprn_weights).to(self.device).eval()
-        self.half = self.device != 'cpu'
-        if self.half:
-            self.stlprn.half()
+
+        # STLPRNet
+        STLPRNet.__init__(self)
 
     def run(self):
         while True:
+            t0 = time.time()
             if plates:
-                self.detect(*plates.popleft())
+                img, xyxys, ids = plates.popleft()
+                detect_cnt = 0
+
+                if len(xyxys) > 0:
+                    # extend id_list if len is less than current id
+                    if len(id_list) < max(ids) + 1:
+                        id_list.extend([Counter()] * (max(ids) + 1 - len(id_list)))
+
+                    # update Counter of id list
+                    for i, xyxy in zip(ids, xyxys):
+                        x1, y1, x2, y2 = xyxy
+
+                        if cv2.pointPolygonTest(polygon_coords, ((x1 + x2) // 2, (y1 + y2) // 2), measureDist=False) > 0:
+                            pred = self.detect(img[y1:y2, x1:x2], device=DEVICE)
+                            
+                            if self.check(pred):
+                                id_list[i].update([pred])
+
+                            detect_cnt += 1
+
+                buffer.append((img, xyxys, ids, [id_list[i].most_common()[0][0] if id_list[i] else "Unknown" for i in ids]))
+                t1 = time.time()
+                bars['LPDR'].update(time=f'{(t1 - t0) * 1000:5.3f}', plates=f'{detect_cnt}/{len(xyxys)} plates')
             else:
-                if not origin and plates:
-                    print("Process Reader is Dead.")
+                if not origin and not plates and not pd.is_alive():
+                    print("Plate Reader is Done.")
                     return
+            time.sleep(0.001)
 
-            time.sleep(0.0001)
-
-    def detect(self, img, xyxys, ids):
-        plate_imgs = [img[y1:y2, x1:x2].astype(np.uint8) for x1, y1, x2, y2 in xyxys]
-
-        t0 = time.time()
-        preds = self.stlprn.detect_imgs(plate_imgs, self.device, self.half)
-        t1 = time.time()
-
-        if plate_imgs:
-            bars['stlprn'].update(time=f'{(t1 - t0) * 1000 / len(plate_imgs):2.2f}')
-
-        for id, pred in zip(ids, preds):
-            while len(id_list) - 1 < id:
-                id_list.append(Counter())
-
-            if self.stlprn.check(pred):
-                id_list[id].update([pred])
-
-        preds_by_id = [id_list[id].most_common()[0][0] if id_list[id] else "Unknown" for id in ids]
-        print(preds_by_id)
-        im0 = plot_boxes_PIL(xyxys, img, labels=preds_by_id, ids=ids, colors=self.colors, line_thickness=2)
-        buffer.append(im0)
-
-
-def update_bars(bars):
-    for bar, dq in zip(bars, [origin, plates, buffer]):
-        if len(dq) / 100 > 0.8:
-            _color = 'green'
-        elif len(dq) / 100 > 0.2:
-            _color = 'white'
-        elif len(dq) / 100 > 0.1:
-            _color = 'yellow'
-        else:
-            _color = 'red'
-        bar.count = len(dq)
-        bar.color = _color
-        bar.update(0)
-
-
-class VideoViewer(Thread):
-    def __init__(self, fps):
+class BoxDrawer(Thread):
+    def __init__(self):
         Thread.__init__(self)
-        self.fps = fps
-        print("Video Viewer is ready")
+        self.colors = np.random.randint(127, size=(255, 3))
 
     def run(self):
-        start = False
-        while bars['player'].count < vr.frame_counts:
-            if len(buffer) > 100:
-                start = True
-                bars['status'].update(stage='Playing')
+        while vr.is_alive() or buffer:
+            if buffer:
+                t0 = time.time()
+                img, xyxys, ids, labels = buffer.popleft()
 
-            t0 = time.time()
-            if buffer and start:
-                img = buffer.popleft()
-                cv2.imshow('result', img)
-                cv2.waitKey(1)
-                bars['player'].update()
-            time.sleep(1 / self.fps * 0.75)
-            t1 = time.time()
+                # draw Contours
+                img = cv2.drawContours(
+                        img,
+                        [polygon_coords],
+                        -1,
+                        color=(255, 0, 0),
+                        thickness=2,
+                        lineType=cv2.LINE_4
+                )
 
-            update_bars([bars['origin'], bars['plates'], bars['buffer']])
-            bars['status'].update(fps=f'{1 / (t1 - t0):2.2f}')
+                # draw boxs & labels
+                for xyxy, i, label in zip(xyxys, ids, labels):
+                    x1, y1, x2, y2 = xyxy
 
-        bars['status'].update(stage='Done.')
-        print("Process VideoViewer Ended")
-        return
+                    if cv2.pointPolygonTest(polygon_coords, ((x1 + x2) // 2, (y1 + y2) // 2), measureDist=False) > 0:
+                        img = self.plot_box(img, xyxy, i, label)
+
+                done.append(img)
+                t1 = time.time()
+                bars['DRAW'].update(time=f'{(t1 - t0) * 1000:5.3f}')
+
+            time.sleep(0.01)
+
+    def plot_box(self, img, box: list[float], i: int, label: str, line_thickness: float=2):
+        img = Image.fromarray(img)
+        draw = ImageDraw.Draw(img)
+        line_thickness = line_thickness or max(int(min(img.size) / 200), 2)
+
+        draw.rectangle(
+                ((box[0], box[1]), (box[2], box[3])),
+                width=line_thickness,
+                outline=tuple(self.colors[i % 255])
+        )
+
+        fontsize = max(round(max(img.size) / 100), 12)
+        font = ImageFont.truetype("./NotoSansKR-Medium.otf", fontsize)
+        txt_width, txt_height = font.getsize(label)
+        draw.rectangle(
+                ((box[0], box[1] - txt_height + 4.), (box[0] + txt_width, box[1])),
+                fill=tuple(self.colors[i % 255])
+        )
+        draw.text((box[0] + 1, box[1] - txt_height - 1), label, fill=(255, 255, 255), font=font)
+        return np.asarray(img)
 
 
-def init_bars(manager):
-    bar_formats = {
-        'status': '{program}{fill} Stage: {stage}{fill} FPS: {fps}',
-        'file': '[ file ]   {file}, {width}x{height}, {length} frames{fill}',
-        'counter': '{desc}{desc_pad} {percentage:3.0f}%|{bar}| {count:{len_total}d}{unit_pad}{unit}s',
-        'inference': '[{name}]   {time}ms/{unit}{fill}',
-        'player': '{desc}{desc_pad}{percentage:3.0f}%|{bar}| {count:{len_total}d}/{total:d} [{elapsed}<{eta}]'
-    }
+def init_bars(manager): 
+    status_format = '[{name}]  {time}ms/{unit}{fill}'
     bars = {
-        'status': manager.status_bar(color='bold_bright_black_on_white', status_format=bar_formats['status'],
-                                     program='License Plate Detection', stage='Loading', fps=f'{0.0:.2f}', position=11),
-        'video': manager.status_bar(status_format=bar_formats['file'], file=os.path.split(VIDEO_PATH)[-1],
-                                    width=vr.frameWidth, height=vr.frameHeight, length=vr.frame_counts, position=9),
-        'origin': manager.counter(total=200, desc='[origin]', unit='frame', bar_format=bar_formats['counter'],
-                                  position=8),
-        'yolo': manager.status_bar(status_format=bar_formats['inference'], name='yolov7', time='0.0', unit='frame',
-                                   position=7),
-        'sort': manager.status_bar(status_format=bar_formats['inference'], name=' SORT ', time='0.0', unit='frame',
-                                   position=6),
-        'plates': manager.counter(total=200, desc='[plates]', unit='plate', bar_format=bar_formats['counter'],
-                                  position=5),
-        'stlprn': manager.status_bar(status_format=bar_formats['inference'], name='STLPRN', time='0.0', unit='plate',
-                                     position=4),
-        'buffer': manager.counter(total=200, desc='[buffer]', unit='frame', bar_format=bar_formats['counter'],
-                                  position=3),
-        'down': manager.status_bar(status_format='   ↓', position=2),
-        'player': manager.counter(total=vr.frame_counts, desc='[  ▶   ]', unit='frame',
-                                  bar_format=bar_formats['player'], color='white_on_black', position=1)
+            'FPS' : manager.status_bar(
+                status_format=status_format, name=' FPS', time='0.0', unit='frame', position=5
+            ),
+            'YOLO' : manager.status_bar(
+                status_format=status_format, name='YOLO', time='0.0', unit='frame', position=4
+            ),
+            'SORT' : manager.status_bar(
+                status_format=status_format, name='SORT', time='0.0', unit='frame', position=3
+            ),
+            'LPDR' : manager.status_bar(
+                status_format='[{name}]  {time}ms/{unit}, {plates}{fill}',
+                name='LPDR', time='0.0', unit='frame', plates='0 plates', position=2
+            ),
+            'DRAW' : manager.status_bar(
+                status_format=status_format, name='DRAW', time='0.0', unit='frame', position=1
+            )
     }
     return bars
 
 
 if __name__ == '__main__':
-    VIDEO_PATH = 'test/test4.mp4'
+    VIDEO_PATH='test/test4.mp4'
+    STLPRNet_WEIGHT='weights/stlprn-best.pt'
 
-    # Queues
-    origin, plates, buffer, id_list = deque(), deque(), deque(), deque()
+    DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    FPS = 30
 
-    # Threads
+    # ROI Polygon Coords
+    polygon_coords = np.ndarray((6, 1, 2), dtype=np.uint)
+
+    polygon_coords[0] = np.array([[ 164, 382]])  # left top
+    polygon_coords[1] = np.array([[1052, 392]]) # right top
+    polygon_coords[2] = np.array([[1279, 589]]) # right bottom
+    polygon_coords[3] = np.array([[1279, 729]]) # right bottom
+    polygon_coords[4] = np.array([[   0, 729]]) # right bottom
+    polygon_coords[5] = np.array([[   0, 593]])
+
+    # QUEUE
+    origin, plates, buffer, done, id_list = deque(), deque(), deque(), deque(), deque()
+
+    # THREADS
     vr = VideoReader(path=VIDEO_PATH)
-    lpd = LicensePlateDetector(root_path='plate/')
-    lpr = LicensePlateReader(stlprn_weights='weights/stlprn-best.pt')
-    vv = VideoViewer(fps=30)
-    vr.daemon, lpd.daemon, lpr.daemon, vv.daemon = True, True, True, True
+    pd = PlateDetetor(root='weights/darknet-plate/')
+    pr = PlateReader().load_from_checkpoint(STLPRNet_WEIGHT).to(DEVICE).eval()
+    bd = BoxDrawer()
+
+    vr.daemon = True
+    pd.daemon = True
+    pr.daemon = True
+    bd.daemon = True
+
+    vr.start()
+    pd.start()
+    pr.start()
+    bd.start()
 
     # display bars
     manager = enlighten.get_manager()
     bars = init_bars(manager)
 
-    # Start Detect & Recognition
-    bars['status'].update(stage='Initializing')
-    vr.start(); lpd.start(); lpr.start(); vv.start()
+    while bd.is_alive() or done:
+        t0 = time.time()
+        if len(done) > 0:
+            cv2.imshow('frame', done.popleft())
+            if cv2.waitKey(1) & 0xFF == ord('x'):
+                break
+        time.sleep(1 / FPS * 0.85)
+        t1 = time.time()
+        bars['FPS'].update(time=f'{1 / (t1 - t0):5.3f}')
 
-    # End
-    while vv.is_alive():
-        time.sleep(5)
     cv2.destroyAllWindows()
+
