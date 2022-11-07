@@ -1,10 +1,9 @@
-[submodule "sort"]
-	path = sort
-	url = https://github.com/abewley/sort
-[submodule "STLPRNet"]
-	path = STLPRNet
-	url = https://github.com/kwon-evan/STLPRNet
-	branch = master
 [submodule "darknet"]
 	path = darknet
 	url = https://github.com/pjreddie/darknet.git
+[submodule "STLPRNet"]
+	path = STLPRNet
+	url = https://github.com/kwon-evan/STLPRNet
+[submodule "sort"]
+	path = sort
+	url = https://github.com/abewley/sort.git
