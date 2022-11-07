@@ -4,3 +4,6 @@
 [submodule "sort"]
 	path = sort
 	url = https://github.com/abewley/sort.git
+[submodule "darknet"]
+	path = darknet
+	url = https://github.com/AlexeyAB/darknet.git
